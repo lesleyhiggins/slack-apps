@@ -1,0 +1,166 @@
+<script runat="server">
+    Platform.Load("Core", "1.1.5");
+
+    // Function to create a section block for Slack message
+    function createSlackSection(title, items) {
+        var sectionText = items.length > 0 ? "• " + items.join("\n• ") : "None";
+        return {
+            type: "section",
+            text: {
+                type: "mrkdwn",
+                text: "*" + title + ":*\n" + sectionText
+            }
+        };
+    }
+
+    var ready = [];
+    var awaitingTrigger = [];
+    var scheduled = [];
+    var running = [];
+    var paused = [];
+    var stopped = [];
+    var inactiveTrigger = [];
+    var building = [];
+
+    var debug = false;
+
+    try {
+        var prox = new Script.Util.WSProxy();
+        var mids = [XXX]; // update with your MID
+
+        for (var i = 0; i < mids.length; i++) {
+            var mid = mids[i];
+            prox.setClientId({ ID: mid });
+            var obj = "Automation";
+            var cols = ["ProgramID", "CustomerKey", "Status", "Name"];
+            var filter = {
+                Property: "Status",
+                SimpleOperator: "IN",
+                Value: [-1, 0, 1, 2, 3, 4, 5, 6, 7, 8]
+            };
+
+            var moreObjs = true;
+            var reqID = null;
+
+            while (moreObjs) {
+                var objs =
+                    reqID == null
+                        ? prox.retrieve(obj, cols, filter)
+                        : prox.getNextBatch(obj, reqID);
+
+                if (objs != null) {
+                    moreObjs = objs.HasMoreRows;
+                    reqID = objs.RequestID;
+
+                    for (var j = 0; j < objs.Results.length; j++) {
+                        var automation = objs.Results[j];
+
+                        switch (automation.Status) {
+                            case 1: // Building
+                                building.push(automation.Name);
+                                break;
+                            case 2: // Ready
+                                ready.push(automation.Name);
+                                break;
+                            case 3: // Running
+                                running.push(automation.Name);
+                                break;
+                            case 4: // Paused
+                                paused.push(automation.Name);
+                                break;
+                            case 5: // Stopped
+                                stopped.push(automation.Name);
+                                break;
+                            case 6: // Scheduled
+                                scheduled.push(automation.Name);
+                                break;
+                            case 7: // Awaiting Trigger
+                                awaitingTrigger.push(automation.Name);
+                                break;
+                            case 8: //Inactive Trigger
+                                inactiveTrigger.push(automation.Name);
+                                break;
+                        }
+                    }
+                }
+            }
+            prox.resetClientIds();
+        }
+    } catch (e) {
+        if (debug) {
+            Write("<br>e: " + Stringify(e));
+        }
+    }
+
+    // Header block definition
+    var headerBlock = {
+        "type": "header",
+        "text": {
+            "type": "plain_text",
+            "text": "Automation Status Summary",
+            "emoji": true
+        }
+    };
+
+    // Initialize the blocks array with the header block
+    var blocks = [headerBlock];
+
+    // Add dynamic sections for each category
+    var blocks = [
+        headerBlock,
+        createSlackSection("Awaiting Trigger", awaitingTrigger),
+        createSlackSection("Running", running),
+        createSlackSection("Scheduled", scheduled),
+        createSlackSection("Paused", paused),
+        createSlackSection("Stopped", stopped),
+        createSlackSection("Ready", ready),
+        createSlackSection("Building", building),
+        createSlackSection("Inactive Trigger", inactiveTrigger)
+    ];
+
+    var name = "keys";
+
+    var userId = Platform.Function.Lookup(
+        name,
+        "client_id",
+        "Service",
+        "Slack"
+    );
+
+    // Prepare the payload for the Slack API
+    var payload = {
+        user_id: userId,
+        view: {
+            type: "home",
+            blocks: blocks
+        }
+    };
+
+    // Stringify the payload for AMPscript
+    var payloadStr = Platform.Function.Stringify(payload);
+
+    // Set the payload as an AMPScript variable
+
+    Variable.SetValue("blocksJson", payloadStr);
+
+    // Write(payloadStr);
+
+    // Embed AMPscript for HTTP POST request
+</script>
+%%[
+    VAR @request, @status, @oathToken, @url, @contentType, @response
+    SET @oathToken = Lookup('keys', 'OAuth_Token', 'Service', 'Slack')
+    SET @url = "https://slack.com/api/views.publish"
+    SET @contentType = "application/json"
+    SET @authToken = Concat("Bearer ", @oathToken)
+    SET @request = HTTPPost(
+        @url,
+        @contentType,
+        @blocksJson,
+        @response,
+        "Authorization",
+        @authToken
+    )
+]%%
+payload: %%=v(@blocksJson)=%% status code: %%=v(@request)=%%
+<br /><br />response: %%=v(@response)=%%
